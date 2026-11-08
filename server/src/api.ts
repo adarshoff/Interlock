@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 import { cfg, log } from "./config.js";
 import { db, q } from "./db.js";
 import { resolveHold } from "./holds.js";
+import type { TransactionRow } from "./types.js";
 
 export function startApi() {
   const app = express();
@@ -25,15 +26,18 @@ export function startApi() {
     const offset = Number(req.query.offset ?? 0);
     const verdict = req.query.verdict as string | undefined;
     const where = verdict ? `WHERE verdict = @verdict` : "";
+    const params: Record<string, string | number> = verdict ? { limit, offset, verdict } : { limit, offset };
     const rows = db
       .prepare(`SELECT * FROM transactions ${where} ORDER BY created_at DESC LIMIT @limit OFFSET @offset`)
-      .all({ limit, offset, verdict });
-    const total = (db.prepare(`SELECT COUNT(*) n FROM transactions ${where}`).get({ verdict }) as any).n;
+      .all(params);
+    const total = (
+      db.prepare(`SELECT COUNT(*) n FROM transactions ${where}`).get(verdict ? { verdict } : {}) as any
+    ).n;
     res.json({ rows, total });
   });
 
   app.get("/api/transactions/:id", (req, res) => {
-    const tx = q.txById.get(req.params.id);
+    const tx = q.txById.get(req.params.id) as TransactionRow | undefined;
     if (!tx) return res.status(404).json({ error: "No transaction with that id." });
     res.json({ ...tx, trace: q.traceFor.all(tx.id)[0], mandate: q.mandateById.get(tx.mandate_id) });
   });
@@ -73,7 +77,7 @@ export function startApi() {
 
   // Dispute evidence assembled from the stored trace.
   app.post("/api/transactions/:id/dispute", (req, res) => {
-    const tx = q.txById.get(req.params.id);
+    const tx = q.txById.get(req.params.id) as TransactionRow | undefined;
     if (!tx) return res.status(404).json({ error: "No transaction with that id." });
     const trace = q.traceFor.all(tx.id)[0] as any;
     const pkg = {

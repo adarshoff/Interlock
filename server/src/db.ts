@@ -1,9 +1,8 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { cfg } from "./config.js";
-import type { Mandate, TransactionRow } from "./types.js";
 
-export const db = new Database(cfg.dbPath);
-db.pragma("journal_mode = WAL");
+export const db = new DatabaseSync(cfg.dbPath);
+db.exec("PRAGMA journal_mode = WAL;");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS mandates (
@@ -78,24 +77,24 @@ CREATE INDEX IF NOT EXISTS idx_pol_mandate ON policies(mandate_id);
 `);
 
 export const q = {
-  activeMandate: db.prepare<[], Mandate>(
+  activeMandate: db.prepare(
     `SELECT * FROM mandates WHERE status='active' ORDER BY created_at DESC LIMIT 1`
   ),
-  mandateById: db.prepare<[string], Mandate>(`SELECT * FROM mandates WHERE id = ?`),
+  mandateById: db.prepare(`SELECT * FROM mandates WHERE id = ?`),
 
-  spentSoFar: db.prepare<[string]>(
+  spentSoFar: db.prepare(
     `SELECT COALESCE(SUM(amount),0) AS total FROM transactions
      WHERE mandate_id = ? AND verdict != 'block' AND resolution != 'denied'`
   ),
-  countSince: db.prepare<[string, number]>(
+  countSince: db.prepare(
     `SELECT COUNT(*) AS n FROM transactions WHERE mandate_id = ? AND created_at > ?`
   ),
-  seenPayee: db.prepare<[string, string]>(
+  seenPayee: db.prepare(
     `SELECT COUNT(*) AS n FROM transactions
      WHERE mandate_id = ? AND payee = ? AND resolution IN ('auto','approved')`
   ),
 
-  policiesFor: db.prepare<[string]>(`SELECT * FROM policies WHERE mandate_id = ?`),
+  policiesFor: db.prepare(`SELECT * FROM policies WHERE mandate_id = ?`),
   insertPolicy: db.prepare(
     `INSERT INTO policies (id, mandate_id, rule_type, value, source, created_at)
      VALUES (@id, @mandate_id, @rule_type, @value, @source, @created_at)`
@@ -112,8 +111,8 @@ export const q = {
   resolveTx: db.prepare(
     `UPDATE transactions SET resolution = ?, resolved_at = ? WHERE id = ?`
   ),
-  txById: db.prepare<[string], TransactionRow>(`SELECT * FROM transactions WHERE id = ?`),
-  pendingTx: db.prepare<[], TransactionRow>(
+  txById: db.prepare(`SELECT * FROM transactions WHERE id = ?`),
+  pendingTx: db.prepare(
     `SELECT * FROM transactions WHERE verdict='hold' AND resolution IS NULL ORDER BY created_at ASC`
   ),
 
@@ -121,7 +120,7 @@ export const q = {
     `INSERT INTO traces (id, transaction_id, consumed_content, agent_reasoning, gate_outputs, created_at)
      VALUES (@id, @transaction_id, @consumed_content, @agent_reasoning, @gate_outputs, @created_at)`
   ),
-  traceFor: db.prepare<[string]>(`SELECT * FROM traces WHERE transaction_id = ?`),
+  traceFor: db.prepare(`SELECT * FROM traces WHERE transaction_id = ?`),
 
   insertSession: db.prepare(
     `INSERT OR IGNORE INTO agent_sessions (id, mandate_id, client_name, started_at)

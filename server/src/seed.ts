@@ -14,7 +14,8 @@ db.prepare(
 ).run(mid, "user_1", "Book a hotel near the conference venue, under $200 a night.", 200, 600, null,
       Date.now() + 86_400_000, Date.now());
 
-const insert = db.transaction(() => {
+db.exec("BEGIN");
+try {
   for (let i = 0; i < 4000; i++) {
     const verdict = verdicts[i % verdicts.length];
     const payee = merchants[i % merchants.length];
@@ -33,6 +34,9 @@ const insert = db.transaction(() => {
       created_at: at, resolved_at: verdict === "block" ? null : at + 2000,
     });
   }
-});
-insert();
+  db.exec("COMMIT");
+} catch (err) {
+  db.exec("ROLLBACK");
+  throw err;
+}
 console.log(`seeded 4000 transactions under mandate ${mid}`);
