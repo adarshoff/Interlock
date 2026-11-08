@@ -62,5 +62,22 @@ for the phases.
 
 ## Current state
 
-Phase 0 complete: scaffold exists, nothing verified against a live sandbox yet.
+Phases 1–3 complete and committed, verified against the live PayPal sandbox:
+
+- AI gates working on Groq (`AI_PROVIDER=groq`, `openai/gpt-oss-120b`); a
+  configured provider that errors fails closed and holds.
+- `extractPayment` fixed for PayPal's real `create_order` shape
+  (`currencyCode` + `items[]`), computing the total as the toolkit does.
+- `MONEY_MOVING_TOOLS` corrected to the real upstream tool names.
+- Process lifecycle handled: exits when the agent closes stdin, kills the
+  PayPal subprocess tree, and a busy console API port is non-fatal.
+
+Known gaps:
+
+- `create_order` has no attacker-controllable payee: the order is created on
+  the merchant account that owns the token. Injection attacks that redirect
+  money must target `create_invoice` / `send_invoice` instead.
+- Refunds do not fit the mandate model. `create_refund` returns money to a
+  buyer rather than spending against a mandate's caps, so policy has no
+  meaningful rule for it yet.
 <!-- update this line at the end of every session -->
