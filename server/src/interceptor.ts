@@ -8,18 +8,41 @@ import { callUpstream } from "./upstream.js";
 import { recentContext } from "./context.js";
 import type { Mandate, Payment, Verdict } from "./types.js";
 
+/**
+ * The order total exactly as @paypal/agent-toolkit computes it before calling PayPal.
+ * `itemTotal` is ignored upstream, so it is ignored here too: an agent cannot understate it to slip under a cap.
+ */
+function paypalOrderTotal(args: any): number | null {
+  if (!Array.isArray(args?.items) || args.items.length === 0) return null;
+  let total = 0;
+  for (const item of args.items) {
+    const cost = Number(item?.itemCost);
+    const qty = Number(item?.quantity ?? 1);
+    const tax = Number(item?.taxPercent ?? 0);
+    if (![cost, qty, tax].every(Number.isFinite)) return null;
+    total += cost * qty * (1 + tax / 100);
+  }
+  total += Number(args.shippingCost ?? 0) - Number(args.discount ?? 0);
+  return Number.isFinite(total) ? Math.round(total * 100) / 100 : null;
+}
+
 /** Pull the amount, currency and payee out of whichever PayPal tool was called. */
 export function extractPayment(tool: string, args: any): Payment {
   const pu = args?.purchase_units?.[0] ?? args?.purchaseUnits?.[0];
   const items = args?.items?.[0];
   const amount =
+    (tool === "create_order" ? paypalOrderTotal(args) : null) ||
     Number(pu?.amount?.value) ||
     Number(args?.amount?.value) ||
     Number(items?.amount?.value) ||
     Number(args?.amount) ||
     null;
   const currency =
-    pu?.amount?.currency_code ?? args?.amount?.currency_code ?? args?.currency ?? "USD";
+    args?.currencyCode ??
+    pu?.amount?.currency_code ??
+    args?.amount?.currency_code ??
+    args?.currency ??
+    "USD";
   const payee =
     pu?.payee?.email_address ??
     args?.payee?.email_address ??

@@ -49,15 +49,17 @@ export async function startMcpServer() {
       return { content: [{ type: "text", text: text.replace(/\s+/g, " ").slice(0, 8000) }] };
     }
 
+    // MCP requires progress to increase on every notification; clients may drop repeats.
+    let progress = 0;
     return intercept(name, args as Record<string, unknown>, {
       sessionId,
       clientName: "mcp-client",
       // Keeps the connection alive while a payment waits on a human.
       sendProgress: (message) => {
-        if (!extra?.sendNotification || !req.params._meta?.progressToken) return;
+        if (!extra?.sendNotification || req.params._meta?.progressToken === undefined) return;
         extra.sendNotification({
           method: "notifications/progress",
-          params: { progressToken: req.params._meta.progressToken, progress: 0, message },
+          params: { progressToken: req.params._meta.progressToken, progress: ++progress, message },
         }).catch(() => {});
       },
     }) as any;
