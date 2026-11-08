@@ -11,6 +11,19 @@ if (!(aiProvider in AI_PROVIDERS))
   throw new Error(`AI_PROVIDER="${process.env.AI_PROVIDER}" is not supported. Use one of: ${Object.keys(AI_PROVIDERS).join(", ")}.`);
 const provider = AI_PROVIDERS[aiProvider];
 
+export type RuleAction = "hold" | "block" | "off";
+function ruleAction(name: string, fallback: RuleAction): RuleAction {
+  const v = (process.env[name] ?? fallback).trim().toLowerCase();
+  if (v !== "hold" && v !== "block" && v !== "off")
+    throw new Error(`${name}="${process.env[name]}" is not valid. Use hold, block or off.`);
+  return v;
+}
+function minutes(name: string, fallback: number): number {
+  const v = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(v) || v <= 0) throw new Error(`${name}="${process.env[name]}" must be a positive number of minutes.`);
+  return v * 60_000;
+}
+
 export const cfg = {
   apiPort: Number(process.env.INTERLOCK_API_PORT ?? 8787),
   dbPath: process.env.INTERLOCK_DB ?? "./interlock.db",
@@ -26,6 +39,19 @@ export const cfg = {
   aiKey: process.env[provider.keyVar] ?? "",
   aiKeyVar: provider.keyVar,
   aiModel: process.env[provider.modelVar] || provider.defaultModel,
+
+  policy: {
+    /** Payments to one merchant whose total within the window exceeds the single-payment cap. */
+    splitPayment: {
+      action: ruleAction("SPLIT_PAYMENT_ACTION", "hold"),
+      windowMs: minutes("SPLIT_PAYMENT_WINDOW_MINUTES", 10),
+    },
+    /** Any payment shortly after a refusal (block, decline or timeout) under the same mandate. */
+    afterRefusal: {
+      action: ruleAction("AFTER_REFUSAL_ACTION", "hold"),
+      windowMs: minutes("AFTER_REFUSAL_WINDOW_MINUTES", 10),
+    },
+  },
 };
 
 /**

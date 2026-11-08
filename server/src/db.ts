@@ -94,6 +94,20 @@ export const q = {
      WHERE mandate_id = ? AND payee = ? AND resolution IN ('auto','approved')`
   ),
 
+  // Payments to one payee that went through or may still go through. `IS` so a null payee
+  // (create_order, paid to the token's own merchant account) matches other null payees.
+  spentToPayeeSince: db.prepare(
+    `SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS n FROM transactions
+     WHERE mandate_id = ? AND payee IS ? AND created_at > ? AND verdict != 'block'
+       AND (resolution IS NULL OR resolution IN ('auto','approved'))`
+  ),
+  lastRefusalSince: db.prepare(
+    `SELECT id, created_at, verdict, rule, resolution FROM transactions
+     WHERE mandate_id = ? AND created_at > ?
+       AND (verdict = 'block' OR resolution IN ('denied','timeout'))
+     ORDER BY created_at DESC LIMIT 1`
+  ),
+
   policiesFor: db.prepare(`SELECT * FROM policies WHERE mandate_id = ?`),
   insertPolicy: db.prepare(
     `INSERT INTO policies (id, mandate_id, rule_type, value, source, created_at)

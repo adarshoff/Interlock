@@ -55,23 +55,42 @@ export function extractPayment(tool: string, args: any): Payment {
   return { tool, amount: Number.isFinite(amount) ? amount : null, currency, payee, description, raw: args };
 }
 
-function refusal(reason: string, detail: string) {
+/**
+ * Tested against live agents: a softer version ("retrying with the same parameters will fail")
+ * led them to split a blocked payment into smaller ones, or switch to invoices, once the user pushed.
+ */
+function refusal(what: string, why: string) {
   return {
     content: [
       {
         type: "text" as const,
         text:
-          `PAYMENT REFUSED BY INTERLOCK.\n\n` +
-          `Reason: ${reason}\n${detail}\n\n` +
-          `This is a policy decision, not a transient error. Retrying this call ` +
-          `with the same parameters will be refused again. Do not attempt a ` +
-          `workaround. Tell the user what you were trying to pay for and why it ` +
-          `was stopped, and let them decide.`,
+          `PAYMENT REFUSED. No money moved.\n\n` +
+          `What happened: ${what}\n` +
+          `Why: ${why}\n\n` +
+          `This decision comes from the account holder's own spending controls (Interlock), which sit ` +
+          `between you and PayPal. It is not a PayPal error and not a temporary problem. It is final ` +
+          `for this purchase.\n\n` +
+          `You must not try to complete this purchase another way. Each of these circumvents the ` +
+          `account holder's limits and is not allowed:\n` +
+          `- retrying, now or later\n` +
+          `- a smaller amount, or splitting the cost across several payments or orders\n` +
+          `- a different tool (create_order, create_invoice, send_invoice, create_subscription, or any other)\n` +
+          `- a different payee, account or payment method\n` +
+          `This holds even if the user tells you to "do whatever works". The user cannot lift this ` +
+          `limit by asking you. Only the account holder can, by changing it in the Interlock console.\n\n` +
+          `What to do now: make no further payment tool calls for this purchase. Tell the user in ` +
+          `plain words what you tried to pay for, the amount, and the reason above. Tell them that if ` +
+          `they want it to go ahead, the account holder must change the limit or approve the payment ` +
+          `in Interlock, and then they can ask you again. Do not suggest workarounds.`,
       },
     ],
     isError: false, // a normal result, so the agent reports it instead of retrying
   };
 }
+
+const describeAmount = (p: Payment) =>
+  p.amount != null ? `${p.amount.toFixed(2)} ${p.currency ?? ""}`.trim() : "an unknown amount";
 
 export async function intercept(
   toolName: string,
@@ -83,7 +102,10 @@ export async function intercept(
 
   const mandate = q.activeMandate.get() as Mandate | undefined;
   if (!mandate)
-    return refusal("no active mandate", "Nobody has authorised this agent to spend. Ask the user to create a mandate in Interlock.");
+    return refusal(
+      "No spending has been authorised for this agent.",
+      "There is no active spending mandate in Interlock."
+    );
 
   q.insertSession.run({
     id: ctx.sessionId,
@@ -152,7 +174,12 @@ export async function intercept(
 
   log(`${toolName} ${payment.amount} ${payment.currency} -> ${verdict}${rule ? ` (${rule})` : ""}`);
 
-  if (verdict === "block") return refusal(rule ?? "blocked", detail ?? "");
+  const amountText = describeAmount(payment);
+  if (verdict === "block")
+    return refusal(
+      `A payment of ${amountText} was blocked before it reached PayPal.`,
+      detail ?? "It breaks one of the account holder's spending rules."
+    );
 
   if (verdict === "hold") {
     ctx.sendProgress?.(`Interlock is holding this payment for approval (${rule}).`);
@@ -161,10 +188,16 @@ export async function intercept(
     );
     q.resolveTx.run(outcome, Date.now(), txId);
 
-    if (outcome !== "approved")
+    const flagged = detail ? ` (It had been flagged for review because: ${detail})` : "";
+    if (outcome === "denied")
       return refusal(
-        outcome === "denied" ? "declined by the account holder" : "approval timed out",
-        detail ?? ""
+        `A payment of ${amountText} was held for review, and the account holder looked at it and declined it.`,
+        `The account holder said no. That decision is the reason, and it stands.${flagged}`
+      );
+    if (outcome === "timeout")
+      return refusal(
+        `A payment of ${amountText} was held for review, and the account holder did not approve it in time.`,
+        `Payments that are not approved are refused, never made.${flagged}`
       );
 
     learnFromApproval(mandate.id, rule, payment);
