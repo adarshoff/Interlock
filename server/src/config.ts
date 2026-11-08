@@ -41,6 +41,10 @@ export const cfg = {
   aiModel: process.env[provider.modelVar] || provider.defaultModel,
 
   policy: {
+    /** Payee, invoicer or recipient emails and business names containing lookalike or hidden characters. */
+    confusablePayee: {
+      action: ruleAction("CONFUSABLE_PAYEE_ACTION", "hold"),
+    },
     /** Payments to one merchant whose total within the window exceeds the single-payment cap. */
     splitPayment: {
       action: ruleAction("SPLIT_PAYMENT_ACTION", "hold"),

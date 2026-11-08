@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "scan": "../server/node_modules/.bin/tsx run.ts"
+    "scan": "node ../server/node_modules/tsx/dist/cli.mjs run.ts"
   }
 }

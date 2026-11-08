@@ -2,6 +2,90 @@ import { cfg } from "./config.js";
 import { q } from "./db.js";
 import type { Mandate, Payment, PolicyResult } from "./types.js";
 
+/* ------------------------------------------------------------------ */
+/* Confusable payees                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Cyrillic and Greek letters that render like Latin ones, mapped to the letter they imitate. */
+const LOOKALIKES: Record<string, string> = Object.fromEntries(
+  [
+    "аa", "сc", "ԁd", "еe", "һh", "іi", "јj", "кk", "ӏl", "оo", "рp", "ԛq", "ѕs", "уy", "хx", "ԝw", "үy", "вb",
+    "АA", "ВB", "СC", "ЕE", "НH", "ІI", "ЈJ", "КK", "МM", "ОO", "РP", "ЅS", "ТT", "ХX", "УY",
+    "αa", "οo", "ρp", "νv", "ιi", "κk", "υu", "τt",
+    "ΑA", "ΒB", "ΕE", "ΖZ", "ΗH", "ΙI", "ΚK", "ΜM", "ΝN", "ΟO", "ΡP", "ΤT", "ΥY", "ΧX",
+  ].map(([from, to]) => [from, to])
+);
+
+const SCRIPTS: Array<[string, RegExp]> = [
+  ["Latin", /\p{Script=Latin}/u],
+  ["Cyrillic", /\p{Script=Cyrillic}/u],
+  ["Greek", /\p{Script=Greek}/u],
+  ["Armenian", /\p{Script=Armenian}/u],
+  ["Cherokee", /\p{Script=Cherokee}/u],
+];
+const scriptOf = (ch: string) =>
+  SCRIPTS.find(([, re]) => re.test(ch))?.[0] ?? (/\p{L}/u.test(ch) ? "other" : null);
+const INVISIBLE = /[\p{Cf}͏ᅟᅠㅤﾠ]/u;
+const codePoint = (ch: string) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+const describe = (ch: string) => `"${ch}" (${codePoint(ch)}${scriptOf(ch) ? `, ${scriptOf(ch)}` : ""})`;
+
+/** What the string would look like to a reader: lookalikes mapped to Latin, hidden characters gone. */
+const skeleton = (s: string) =>
+  [...s.normalize("NFKC")].map((ch) => LOOKALIKES[ch] ?? ch).join("").replace(new RegExp(INVISIBLE, "gu"), "");
+
+/**
+ * Why a payee-identifying string could be impersonating another, or null if it looks honest.
+ * Emails must be plain ASCII (real internationalised domains travel as punycode). Names may be
+ * accented Latin or wholly another script, but not a mix, not hidden characters, and not a
+ * non-Latin string built entirely from letters that imitate Latin ones.
+ */
+export function confusableReason(value: string, kind: "email" | "name"): string | null {
+  const chars = [...value];
+  const hidden = chars.filter((c) => INVISIBLE.test(c));
+  if (hidden.length) return `contains invisible character(s) ${hidden.map(describe).join(", ")}`;
+
+  if (kind === "email") {
+    const odd = chars.filter((c) => c < " " || c > "~");
+    return odd.length ? `contains non-ASCII character(s) ${odd.map(describe).join(", ")}` : null;
+  }
+
+  if (value.normalize("NFKC") !== value) {
+    const odd = chars.filter((c) => c.normalize("NFKC") !== c);
+    return `contains full-width or compatibility character(s) ${odd.map(describe).join(", ")}`;
+  }
+  const letters = chars.filter((c) => scriptOf(c));
+  const scripts = new Set(letters.map(scriptOf));
+  if (scripts.size > 1) {
+    const minority = letters.filter((c) => scriptOf(c) !== "Latin");
+    return `mixes ${[...scripts].join(" and ")} letters: ${minority.map(describe).join(", ")}`;
+  }
+  if (letters.length && !scripts.has("Latin") && letters.every((c) => LOOKALIKES[c]))
+    return `is written entirely in ${[...scripts][0]} letters that imitate Latin ones`;
+  return null;
+}
+
+/** Every string in a money-moving call that names who is paid, billed, or doing the billing. */
+function payeeIdentities(payment: Payment): Array<{ field: string; value: string; kind: "email" | "name" }> {
+  const raw: any = payment.raw ?? {};
+  const out: Array<{ field: string; value: string; kind: "email" | "name" }> = [];
+  const add = (field: string, value: unknown, kind: "email" | "name") => {
+    if (typeof value === "string" && value) out.push({ field, value, kind });
+  };
+  add("payee", payment.payee, payment.payee?.includes("@") ? "email" : "name");
+  add("invoicer_email_address", raw.invoicer_email_address, "email");
+  add("invoicer_business_name", raw.invoicer_business_name, "name");
+  (Array.isArray(raw.primary_recipients) ? raw.primary_recipients : []).forEach((r: any, i: number) => {
+    add(`primary_recipients[${i}].billing_info.email_address`, r?.billing_info?.email_address, "email");
+    add(`primary_recipients[${i}].billing_info.business_name`, r?.billing_info?.business_name, "name");
+    add(`primary_recipients[${i}].shipping_info.business_name`, r?.shipping_info?.business_name, "name");
+  });
+  (Array.isArray(raw.additional_recipients) ? raw.additional_recipients : []).forEach((v: unknown, i: number) =>
+    add(`additional_recipients[${i}]`, v, "email"));
+  (Array.isArray(raw.purchase_units) ? raw.purchase_units : []).forEach((pu: any, i: number) =>
+    add(`purchase_units[${i}].payee.email_address`, pu?.payee?.email_address, "email"));
+  return out;
+}
+
 /**
  * Deterministic. No model is consulted here, ever.
  * A hard spending limit enforced by an LLM is not a limit.
@@ -48,6 +132,20 @@ export function evaluatePolicy(mandate: Mandate, payment: Payment): PolicyResult
 
   if (payee && block.some((b) => payee.includes(b)))
     return { verdict: "block", rule: "merchant_block", detail: `${payment.payee} is on the blocklist.` };
+
+  // A payee that only looks like a known one is the impersonation the injection scanner cannot see.
+  const confusable = cfg.policy.confusablePayee;
+  if (confusable.action !== "off") {
+    for (const id of payeeIdentities(payment)) {
+      const reason = confusableReason(id.value, id.kind);
+      if (reason)
+        return {
+          verdict: confusable.action,
+          rule: "confusable_payee",
+          detail: `${id.field} "${id.value}" ${reason}. It can look identical to "${skeleton(id.value)}".`,
+        };
+    }
+  }
 
   // Splitting one purchase into payments that are each under the cap is still one purchase.
   const split = cfg.policy.splitPayment;
