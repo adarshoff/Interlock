@@ -1,5 +1,16 @@
 import "dotenv/config";
 
+const AI_PROVIDERS = {
+  anthropic: { keyVar: "ANTHROPIC_API_KEY", modelVar: "ANTHROPIC_MODEL", defaultModel: "claude-sonnet-4-6" },
+  groq: { keyVar: "GROQ_API_KEY", modelVar: "GROQ_MODEL", defaultModel: "openai/gpt-oss-120b" },
+} as const;
+export type AiProvider = keyof typeof AI_PROVIDERS;
+
+const aiProvider = (process.env.AI_PROVIDER ?? "anthropic").trim().toLowerCase() as AiProvider;
+if (!(aiProvider in AI_PROVIDERS))
+  throw new Error(`AI_PROVIDER="${process.env.AI_PROVIDER}" is not supported. Use one of: ${Object.keys(AI_PROVIDERS).join(", ")}.`);
+const provider = AI_PROVIDERS[aiProvider];
+
 export const cfg = {
   apiPort: Number(process.env.INTERLOCK_API_PORT ?? 8787),
   dbPath: process.env.INTERLOCK_DB ?? "./interlock.db",
@@ -10,8 +21,11 @@ export const cfg = {
   paypalAccessToken: process.env.PAYPAL_ACCESS_TOKEN ?? "",
   paypalEnvironment: process.env.PAYPAL_ENVIRONMENT ?? "SANDBOX",
 
-  anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
-  aiModel: process.env.AI_MODEL ?? "claude-sonnet-4-6",
+  aiProvider,
+  /** Empty means mock mode: heuristics only, no model calls. */
+  aiKey: process.env[provider.keyVar] ?? "",
+  aiKeyVar: provider.keyVar,
+  aiModel: process.env[provider.modelVar] || provider.defaultModel,
 };
 
 /**

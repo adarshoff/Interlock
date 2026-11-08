@@ -1,4 +1,4 @@
-import { cfg, log } from "./config.js";
+import { cfg, log, type AiProvider } from "./config.js";
 import type { IntentResult, InjectionResult, Mandate, Payment } from "./types.js";
 
 /**
@@ -7,37 +7,75 @@ import type { IntentResult, InjectionResult, Mandate, Payment } from "./types.js
  */
 type GateCall<T> = { kind: "ok"; value: T } | { kind: "mock" } | { kind: "error"; reason: string };
 
+log(
+  cfg.aiKey
+    ? `AI gates: ${cfg.aiProvider}/${cfg.aiModel}`
+    : `AI gates: MOCK mode (${cfg.aiKeyVar} not set; heuristics only)`
+);
+
 const MODEL_TIMEOUT_MS = 30_000;
 const GATE_ERROR = "gate_error";
 const SCAN_ERROR = "scan_error";
 
+interface ProviderCall {
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+  /** Text of the reply, or why there is none. */
+  read: (data: any) => { text: string; stop: string };
+}
+
+const PROVIDERS: Record<AiProvider, (system: string, user: string) => ProviderCall> = {
+  anthropic: (system, user) => ({
+    url: "https://api.anthropic.com/v1/messages",
+    headers: { "x-api-key": cfg.aiKey, "anthropic-version": "2023-06-01" },
+    body: { model: cfg.aiModel, max_tokens: 600, system, messages: [{ role: "user", content: user }] },
+    read: (data) => ({
+      text: (data?.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(""),
+      stop: data?.stop_reason ?? "unknown",
+    }),
+  }),
+  groq: (system, user) => ({
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    headers: { authorization: `Bearer ${cfg.aiKey}` },
+    body: {
+      model: cfg.aiModel,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      // Reasoning tokens count against this budget; too small and the JSON never arrives.
+      max_completion_tokens: 4096,
+      reasoning_effort: "low",
+      temperature: 0,
+      response_format: { type: "json_object" },
+    },
+    read: (data) => ({
+      text: data?.choices?.[0]?.message?.content ?? "",
+      stop: data?.choices?.[0]?.finish_reason ?? "unknown",
+    }),
+  }),
+};
+
 async function ask(gate: string, system: string, user: string): Promise<GateCall<string>> {
-  if (!cfg.anthropicKey) return { kind: "mock" };
+  if (!cfg.aiKey) return { kind: "mock" };
   const fail = (reason: string): GateCall<string> => {
-    log(`AI GATE FAILED [${gate}] model=${cfg.aiModel}: ${reason} — failing closed, payment will be held`);
+    log(`AI GATE FAILED [${gate}] ${cfg.aiProvider}/${cfg.aiModel}: ${reason} — failing closed, payment will be held`);
     return { kind: "error", reason };
   };
+  const call = PROVIDERS[cfg.aiProvider](system, user);
   try {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
+    const r = await fetch(call.url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": cfg.anthropicKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: cfg.aiModel,
-        max_tokens: 600,
-        system,
-        messages: [{ role: "user", content: user }],
-      }),
+      headers: { "content-type": "application/json", ...call.headers },
+      body: JSON.stringify(call.body),
       signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
     });
     const data: any = await r.json().catch(() => null);
-    if (!r.ok || data?.type === "error")
+    if (!r.ok || data?.type === "error" || data?.error)
       return fail(`HTTP ${r.status} ${data?.error?.type ?? ""} ${data?.error?.message ?? ""}`.trim());
-    const text = (data?.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
-    if (!text.trim()) return fail(`empty response (stop_reason=${data?.stop_reason ?? "unknown"})`);
+    const { text, stop } = call.read(data);
+    if (!text.trim()) return fail(`empty response (stop=${stop})`);
     return { kind: "ok", value: text };
   } catch (e: any) {
     return fail(e?.name === "TimeoutError" ? `no response within ${MODEL_TIMEOUT_MS}ms` : `request failed: ${e?.message ?? e}`);
@@ -56,7 +94,7 @@ async function askJson<T>(gate: string, system: string, user: string): Promise<G
     return { kind: "ok", value: JSON.parse(cleaned.slice(start, end + 1)) as T };
   } catch {
     const reason = `unparseable model output: ${res.value.slice(0, 120)}`;
-    log(`AI GATE FAILED [${gate}] model=${cfg.aiModel}: ${reason} — failing closed, payment will be held`);
+    log(`AI GATE FAILED [${gate}] ${cfg.aiProvider}/${cfg.aiModel}: ${reason} — failing closed, payment will be held`);
     return { kind: "error", reason };
   }
 }
