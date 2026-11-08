@@ -104,5 +104,13 @@ export function startApi() {
     res.json(db.prepare(`SELECT * FROM disputes ORDER BY created_at DESC`).all());
   });
 
-  app.listen(cfg.apiPort, () => log(`console API on http://localhost:${cfg.apiPort}`));
+  const server = app.listen(cfg.apiPort, () => log(`console API on http://localhost:${cfg.apiPort}`));
+  // The console is optional; the proxy must keep governing the agent without it.
+  server.on("error", (e: NodeJS.ErrnoException) => {
+    if (e.code === "EADDRINUSE") {
+      log(`console API disabled: port ${cfg.apiPort} is already in use; MCP proxy continues`);
+    } else {
+      log("console API error:", e);
+    }
+  });
 }
