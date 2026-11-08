@@ -20,10 +20,9 @@ export const cfg = {
  */
 export const MONEY_MOVING_TOOLS = new Set([
   "create_order",
-  "capture_order",
   "pay_order",
-  "create_payout",
   "create_refund",
+  "accept_dispute_claim",
   "create_subscription",
   "create_invoice",
   "send_invoice",
