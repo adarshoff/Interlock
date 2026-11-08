@@ -62,7 +62,7 @@ for the phases.
 
 ## Current state
 
-Phases 1–3 complete and committed, verified against the live PayPal sandbox:
+Phases 1–5 complete and committed, verified against the live PayPal sandbox:
 
 - AI gates working on Groq (`AI_PROVIDER=groq`, `openai/gpt-oss-120b`); a
   configured provider that errors fails closed and holds.
@@ -71,6 +71,12 @@ Phases 1–3 complete and committed, verified against the live PayPal sandbox:
 - `MONEY_MOVING_TOOLS` corrected to the real upstream tool names.
 - Process lifecycle handled: exits when the agent closes stdin, kills the
   PayPal subprocess tree, and a busy console API port is non-fatal.
+- Refusal wording hardened after adversarial testing: 6 of 8 baseline runs
+  worked around the old text, and two defeated the cap by splitting $340 into
+  $200 + $140 with real sandbox orders.
+- `split_payment` and `after_refusal` rules added to `policy.ts`, each with a
+  configurable action and window, covered by 10 tests in
+  `server/test/policy.test.ts`.
 
 Known gaps:
 
@@ -80,4 +86,7 @@ Known gaps:
 - Refunds do not fit the mandate model. `create_refund` returns money to a
   buyer rather than spending against a mandate's caps, so policy has no
   meaningful rule for it yet.
+- The console API does not retry binding its port. A restart race can leave
+  the proxy running with no way to approve holds, and every hold then times
+  out.
 <!-- update this line at the end of every session -->
