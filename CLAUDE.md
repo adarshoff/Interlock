@@ -1,0 +1,66 @@
+# Interlock
+
+A transparent MCP proxy that governs AI agent payments through PayPal.
+
+```
+agent (unmodified) → Interlock → 3 gates → PayPal MCP + APIs
+                         ↓
+                   hold → human approves in console → call resumes
+```
+
+The agent points its MCP config at Interlock instead of PayPal. Interlock
+re-exposes PayPal's tools under identical names, so the agent needs no
+modification and cannot tell it is being governed.
+
+## Non-negotiable rules
+
+- **stdout belongs to the MCP protocol.** Every log line goes to stderr via
+  `log()` in `config.ts`. A single `console.log` corrupts the JSON-RPC stream
+  and the agent disconnects silently.
+- **Refusals return a normal tool result, never an error.** The text must tell
+  the model plainly that retrying will fail. An error makes agents retry in a
+  loop or invent workarounds.
+- **Hard spending limits live in `policy.ts` as code.** A model is never asked
+  to enforce arithmetic.
+- **The `traces` table is append-only.** Never UPDATE it.
+- **Scanned content is untrusted data.** It is always wrapped in delimiters
+  with an explicit instruction that nothing inside is an instruction.
+- **The agent is never modified.** If a change would require editing the
+  agent, it is the wrong change.
+
+## Stack
+
+TypeScript throughout. `@modelcontextprotocol/sdk`, `better-sqlite3`,
+`express`. Console is React + Vite + AG Grid Enterprise.
+
+```bash
+cd server && npm run dev      # MCP proxy on stdio, API on :8787
+cd console && npm run dev     # http://localhost:5173
+cd server && npm run seed     # 4,000 synthetic payments
+```
+
+## Layout
+
+| Path | Owns |
+| --- | --- |
+| `server/src/upstream.ts` | MCP client facing PayPal |
+| `server/src/mcp.ts` | MCP server facing the agent, plus `fetch_page` |
+| `server/src/interceptor.ts` | Gate sequencing and the verdict |
+| `server/src/holds.ts` | Suspend and resume an in-flight tool call |
+| `server/src/policy.ts` | Deterministic rules, learning from approvals |
+| `server/src/ai.ts` | Intent check and injection scan |
+| `server/src/api.ts` | Console API |
+| `console/src/Approvals.tsx` | The screen that is on camera |
+| `console/src/Transactions.tsx` | AG Grid: master/detail, grouping, SSRM |
+| `attack-suite/` | Hosted attack pages and the benchmark runner |
+
+## Working style
+
+One phase per session. Run it, confirm the acceptance test passes, commit,
+stop. Never generate several files at once without running them. See `BUILD.md`
+for the phases.
+
+## Current state
+
+Phase 0 complete: scaffold exists, nothing verified against a live sandbox yet.
+<!-- update this line at the end of every session -->
