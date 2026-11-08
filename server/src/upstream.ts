@@ -20,7 +20,8 @@ export async function connectUpstream(): Promise<Client> {
   });
 
   const c = new Client({ name: "interlock-proxy", version: "0.1.0" }, { capabilities: {} });
-  await c.connect(transport);
+  // A cold `npx -y` install of the upstream can outlast the SDK's 60s default.
+  await c.connect(transport, { timeout: 180_000 });
   client = c;
 
   const listed = await c.listTools();
