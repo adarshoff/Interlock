@@ -1,0 +1,8 @@
+{
+  "name": "interlock-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "reset": "node ../server/node_modules/tsx/dist/cli.mjs reset.ts"
+  }
+}
