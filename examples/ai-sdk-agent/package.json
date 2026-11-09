@@ -1,0 +1,19 @@
+{
+  "name": "interlock-example-ai-sdk-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx agent.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/groq": "^4.0.78",
+    "@ai-sdk/mcp": "^2.0.93",
+    "ai": "^7.0.166",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -23,18 +23,28 @@ const FETCH_TOOL = {
 };
 
 export async function startMcpServer() {
-  await connectUpstream();
   const sessionId = `ses_${nanoid(8)}`;
+  // PayPal's server takes 10s+ to start (a minute on a cold npx install). Answer the agent's
+  // handshake straight away and make only the calls that need PayPal wait for it: clients
+  // differ in how long they will wait for initialize, and some probe with a 1s timeout first.
+  const upstream = connectUpstream();
+  upstream.catch(() => {}); // the failure is surfaced by the await at the end
 
   const server = new Server(
     { name: "interlock", version: "0.1.0" },
     { capabilities: { tools: {} } }
   );
+  const clientName = () => {
+    const c = server.getClientVersion();
+    return c ? `${c.name}/${c.version}` : "unknown-client";
+  };
+  let warnedNoProgress = false;
 
   // Re-expose every upstream tool under its identical name and schema, plus ours.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...upstreamTools(), FETCH_TOOL],
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    await upstream;
+    return { tools: [...upstreamTools(), FETCH_TOOL] };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const { name, arguments: args = {} } = req.params;
@@ -49,14 +59,23 @@ export async function startMcpServer() {
       return { content: [{ type: "text", text: text.replace(/\s+/g, " ").slice(0, 8000) }] };
     }
 
+    await upstream;
     // MCP requires progress to increase on every notification; clients may drop repeats.
     let progress = 0;
     return intercept(name, args as Record<string, unknown>, {
       sessionId,
-      clientName: "mcp-client",
+      clientName: clientName(),
       // Keeps the connection alive while a payment waits on a human.
       sendProgress: (message) => {
-        if (!extra?.sendNotification || req.params._meta?.progressToken === undefined) return;
+        if (req.params._meta?.progressToken === undefined) {
+          if (!warnedNoProgress) {
+            warnedNoProgress = true;
+            log(`${clientName()} did not ask for progress updates, so holds send it no heartbeat; ` +
+              `a hold survives only if the client has no request timeout shorter than HOLD_TIMEOUT_MS`);
+          }
+          return;
+        }
+        if (!extra?.sendNotification) return;
         extra.sendNotification({
           method: "notifications/progress",
           params: { progressToken: req.params._meta.progressToken, progress: ++progress, message },
@@ -66,5 +85,7 @@ export async function startMcpServer() {
   });
 
   await server.connect(new StdioServerTransport());
-  log(`MCP proxy ready, session ${sessionId}`);
+  log(`MCP proxy listening, session ${sessionId}; waiting for PayPal's server`);
+  await upstream;
+  log(`MCP proxy ready, session ${sessionId}, client ${clientName()}`);
 }
