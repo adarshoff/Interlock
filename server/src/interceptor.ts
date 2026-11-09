@@ -26,8 +26,47 @@ function paypalOrderTotal(args: any): number | null {
   return Number.isFinite(total) ? Math.round(total * 100) / 100 : null;
 }
 
+/**
+ * An invoice total as PayPal computes it from the line items the toolkit passes through unchanged:
+ * per line, quantity × unit_amount, less its discount (amount or percent), plus tax on what remains;
+ * then shipping_cost. Any line that cannot be read makes the whole total unknown, never smaller.
+ */
+export function invoiceTotal(items: unknown, shippingCost?: unknown): number | null {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  let total = 0;
+  for (const item of items as any[]) {
+    const qty = Number(item?.quantity ?? 1);
+    const unit = Number(item?.unit_amount?.value);
+    const gross = qty * unit;
+    const discount =
+      item?.discount?.amount?.value != null ? Number(item.discount.amount.value)
+      : item?.discount?.percent != null ? (gross * Number(item.discount.percent)) / 100
+      : 0;
+    const taxPercent = Number(item?.tax?.percent ?? 0);
+    if (![qty, unit, discount, taxPercent].every(Number.isFinite)) return null;
+    total += (gross - discount) * (1 + taxPercent / 100);
+  }
+  total += Number(shippingCost ?? 0);
+  return Number.isFinite(total) ? Math.round(total * 100) / 100 : null;
+}
+
+const firstRecipient = (recipients: any) => recipients?.[0]?.billing_info?.email_address ?? null;
+
 /** Pull the amount, currency and payee out of whichever PayPal tool was called. */
 export function extractPayment(tool: string, args: any): Payment {
+  if (tool === "create_invoice")
+    return {
+      tool,
+      amount: invoiceTotal(args?.items, args?.shipping_cost),
+      currency: args?.currency_code ?? "USD",
+      payee: firstRecipient(args?.primary_recipients),
+      description: args?.note ?? args?.items?.[0]?.name ?? null,
+      raw: args,
+    };
+  // The amount lives on the invoice at PayPal; resolveSendInvoice fills it in before policy runs.
+  if (tool === "send_invoice")
+    return { tool, amount: null, currency: null, payee: null, description: args?.note ?? null, raw: args };
+
   const pu = args?.purchase_units?.[0] ?? args?.purchaseUnits?.[0];
   const items = args?.items?.[0];
   const amount =
@@ -53,6 +92,40 @@ export function extractPayment(tool: string, args: any): Payment {
     null;
   const description = pu?.description ?? args?.description ?? args?.note ?? null;
   return { tool, amount: Number.isFinite(amount) ? amount : null, currency, payee, description, raw: args };
+}
+
+type InvoiceLookup = (invoiceId: string) => Promise<any>;
+
+/** Reads the invoice being sent from PayPal (read-only get_invoice) and returns its total, currency and recipient. */
+const lookupViaUpstream: InvoiceLookup = async (invoiceId) => {
+  const res: any = await callUpstream("get_invoice", { invoice_id: invoiceId });
+  const text = (res?.content ?? []).map((c: any) => c?.text ?? "").join("");
+  return JSON.parse(text);
+};
+
+/**
+ * send_invoice names an invoice, not an amount. Look it up so the caps see what is being sent.
+ * If the lookup fails the amount stays null, and policy holds the payment rather than treating it as $0.
+ */
+export async function resolveSendInvoice(payment: Payment, lookup: InvoiceLookup = lookupViaUpstream): Promise<Payment> {
+  const invoiceId = (payment.raw as any)?.invoice_id;
+  if (!invoiceId) return payment;
+  try {
+    const inv = await lookup(String(invoiceId));
+    const value = Number(inv?.amount?.value);
+    if (!Number.isFinite(value))
+      log(`send_invoice ${invoiceId}: PayPal returned no invoice amount (${JSON.stringify(inv).slice(0, 160)}); amount unknown`);
+    return {
+      ...payment,
+      amount: Number.isFinite(value) ? value : null,
+      currency: inv?.amount?.currency_code ?? inv?.detail?.currency_code ?? payment.currency,
+      payee: firstRecipient(inv?.primary_recipients) ?? payment.payee,
+      description: payment.description ?? inv?.detail?.note ?? null,
+    };
+  } catch (e) {
+    log(`send_invoice ${invoiceId}: could not read the invoice from PayPal (${e instanceof Error ? e.message : e}); amount unknown`);
+    return payment;
+  }
 }
 
 /**
@@ -114,7 +187,8 @@ export async function intercept(
     started_at: Date.now(),
   });
 
-  const payment = extractPayment(toolName, args);
+  let payment = extractPayment(toolName, args);
+  if (toolName === "send_invoice") payment = await resolveSendInvoice(payment);
   const { content, reasoning } = recentContext(ctx.sessionId);
 
   // Gate 1 — deterministic, cheapest, runs before any model call.

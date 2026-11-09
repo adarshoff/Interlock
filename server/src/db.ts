@@ -84,7 +84,7 @@ export const q = {
 
   spentSoFar: db.prepare(
     `SELECT COALESCE(SUM(amount),0) AS total FROM transactions
-     WHERE mandate_id = ? AND verdict != 'block' AND resolution != 'denied'`
+     WHERE mandate_id = ? AND verdict != 'block' AND resolution != 'denied' AND tool_name != 'send_invoice'`
   ),
   countSince: db.prepare(
     `SELECT COUNT(*) AS n FROM transactions WHERE mandate_id = ? AND created_at > ?`
@@ -98,7 +98,7 @@ export const q = {
   // (create_order, paid to the token's own merchant account) matches other null payees.
   spentToPayeeSince: db.prepare(
     `SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS n FROM transactions
-     WHERE mandate_id = ? AND payee IS ? AND created_at > ? AND verdict != 'block'
+     WHERE mandate_id = ? AND payee IS ? AND created_at > ? AND verdict != 'block' AND tool_name != 'send_invoice'
        AND (resolution IS NULL OR resolution IN ('auto','approved'))`
   ),
   lastRefusalSince: db.prepare(

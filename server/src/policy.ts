@@ -86,6 +86,9 @@ function payeeIdentities(payment: Payment): Array<{ field: string; value: string
   return out;
 }
 
+/** Tools whose amount Interlock computes itself; for these, an unreadable amount is a hold, not $0. */
+const AMOUNT_KNOWN_TOOLS = new Set(["create_order", "create_invoice", "send_invoice"]);
+
 /**
  * Deterministic. No model is consulted here, ever.
  * A hard spending limit enforced by an LLM is not a limit.
@@ -104,6 +107,9 @@ export function evaluatePolicy(mandate: Mandate, payment: Payment): PolicyResult
     return { verdict: "block", rule: "expiry", detail: "Mandate expired." };
 
   const amount = payment.amount ?? 0;
+  // An invoice's spend is counted once, when it is created. Sending it is checked against the
+  // single-payment cap, but adding it to running totals again would count the same money twice.
+  const newSpend = payment.tool !== "send_invoice";
 
   if (mandate.amount_cap != null && amount > mandate.amount_cap)
     return {
@@ -112,7 +118,7 @@ export function evaluatePolicy(mandate: Mandate, payment: Payment): PolicyResult
       detail: `Payment of ${amount} exceeds the single-payment cap of ${mandate.amount_cap}.`,
     };
 
-  if (mandate.cumulative_cap != null) {
+  if (mandate.cumulative_cap != null && newSpend) {
     const spent = (q.spentSoFar.get(mandate.id) as { total: number }).total;
     if (spent + amount > mandate.cumulative_cap)
       return {
@@ -133,6 +139,15 @@ export function evaluatePolicy(mandate: Mandate, payment: Payment): PolicyResult
   if (payee && block.some((b) => payee.includes(b)))
     return { verdict: "block", rule: "merchant_block", detail: `${payment.payee} is on the blocklist.` };
 
+  // Unknown is not zero. For tools whose amount Interlock can always read, failing to read it means
+  // the caps above saw $0, so a person has to look.
+  if (payment.amount == null && AMOUNT_KNOWN_TOOLS.has(payment.tool))
+    return {
+      verdict: "hold",
+      rule: "amount_unknown",
+      detail: `Interlock could not work out how much this ${payment.tool} is for, so the spending caps could not be checked.`,
+    };
+
   // A payee that only looks like a known one is the impersonation the injection scanner cannot see.
   const confusable = cfg.policy.confusablePayee;
   if (confusable.action !== "off") {
@@ -149,7 +164,7 @@ export function evaluatePolicy(mandate: Mandate, payment: Payment): PolicyResult
 
   // Splitting one purchase into payments that are each under the cap is still one purchase.
   const split = cfg.policy.splitPayment;
-  if (split.action !== "off" && mandate.amount_cap != null) {
+  if (split.action !== "off" && mandate.amount_cap != null && newSpend) {
     const recent = q.spentToPayeeSince.get(mandate.id, payment.payee, now - split.windowMs) as { total: number; n: number };
     const combined = Math.round((recent.total + amount) * 100) / 100;
     if (recent.n > 0 && combined > mandate.amount_cap)
