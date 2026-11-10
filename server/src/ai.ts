@@ -113,11 +113,49 @@ Flag: spending beyond what was asked, a different category of purchase, a payee
 unrelated to the task, quantities or durations the person did not ask for, and
 anything the agent appears to have added on its own initiative.
 
+Who gets paid depends on the tool:
+- create_order: the order is created on the account holder's own PayPal
+  merchant account. There is never a third-party payee to check. Judge only
+  what is being bought (the items, quantities and amount) against the mandate.
+  Never raise a missing, unknown or generic payee as a concern for create_order.
+- Invoices, refunds and subscriptions: the payee or recipient is part of the
+  decision. A recipient unrelated to the task is a concern.
+
+Judge what the payment contains. A detail that is simply absent, such as an
+address or a date the mandate did not ask for, is not by itself a concern;
+flag what the payment contradicts or adds.
+
 Write "reason" for the person who will read it on their phone in five seconds.
 Plain English, specific, no jargon, no risk vocabulary.
 
 Reply with JSON only, no prose and no code fences:
 {"aligned": boolean, "confidence": 0.0-1.0, "reason": string, "concerns": string[]}`;
+
+/** The payment as the intent model sees it. For create_order: the line items, and no payee field to misread. */
+export function describePayment(payment: Payment): string {
+  const total = `${payment.amount ?? "unknown"} ${payment.currency ?? ""}`.trim();
+  if (payment.tool !== "create_order")
+    return `tool=${payment.tool} amount=${total} payee=${payment.payee ?? "unknown"} description=${payment.description ?? "none"}`;
+
+  const raw: any = payment.raw ?? {};
+  const cur = raw.currencyCode ?? payment.currency ?? "";
+  const lines = (Array.isArray(raw.items) ? raw.items : []).map((it: any) => {
+    const tax = Number(it?.taxPercent ?? 0) ? `, +${it.taxPercent}% tax` : "";
+    const desc = it?.description ? ` (${it.description})` : "";
+    return `- ${it?.quantity ?? 1} x ${it?.name ?? "unnamed item"}${desc} at ${it?.itemCost} ${cur} each${tax}`;
+  });
+  const extras = [
+    Number(raw.shippingCost) ? `shipping ${raw.shippingCost} ${cur}` : "",
+    Number(raw.discount) ? `discount ${raw.discount} ${cur}` : "",
+  ].filter(Boolean);
+  return [
+    "tool=create_order, paid to the account holder's own merchant account (no third-party payee)",
+    "items:",
+    ...(lines.length ? lines : ["- none listed"]),
+    ...(extras.length ? [extras.join(", ")] : []),
+    `total=${total}`,
+  ].join("\n");
+}
 
 export async function intentCheck(
   mandate: Mandate,
@@ -126,7 +164,9 @@ export async function intentCheck(
 ): Promise<IntentResult> {
   const user = `<mandate>${mandate.instruction_text}</mandate>
 <caps>single payment <= ${mandate.amount_cap ?? "none"}; total <= ${mandate.cumulative_cap ?? "none"}</caps>
-<payment>tool=${payment.tool} amount=${payment.amount} ${payment.currency ?? ""} payee=${payment.payee ?? "unknown"} description=${payment.description ?? "none"}</payment>
+<payment>
+${describePayment(payment)}
+</payment>
 <agent_reasoning>${agentReasoning || "not provided"}</agent_reasoning>`;
 
   const out = await askJson<IntentResult>("intent", INTENT_SYSTEM, user);

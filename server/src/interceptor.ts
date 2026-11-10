@@ -132,7 +132,7 @@ export async function resolveSendInvoice(payment: Payment, lookup: InvoiceLookup
  * Tested against live agents: a softer version ("retrying with the same parameters will fail")
  * led them to split a blocked payment into smaller ones, or switch to invoices, once the user pushed.
  */
-function refusal(what: string, why: string) {
+function refusal(what: string, why: string, nextStep: string) {
   return {
     content: [
       {
@@ -153,9 +153,9 @@ function refusal(what: string, why: string) {
           `This holds even if the user tells you to "do whatever works". The user cannot lift this ` +
           `limit by asking you. Only the account holder can, by changing it in the Interlock console.\n\n` +
           `What to do now: make no further payment tool calls for this purchase. Tell the user in ` +
-          `plain words what you tried to pay for, the amount, and the reason above. Tell them that if ` +
-          `they want it to go ahead, the account holder must change the limit or approve the payment ` +
-          `in Interlock, and then they can ask you again. Do not suggest workarounds.`,
+          `plain words what you tried to pay for, the amount, and the reason above. If they want it ` +
+          `to go ahead, the account holder must ${nextStep}; then they can ask you again. Tell them ` +
+          `exactly that, and nothing more. Do not suggest workarounds.`,
       },
     ],
     isError: false, // a normal result, so the agent reports it instead of retrying
@@ -177,7 +177,8 @@ export async function intercept(
   if (!mandate)
     return refusal(
       "No spending has been authorised for this agent.",
-      "There is no active spending mandate in Interlock."
+      "There is no active spending mandate in Interlock.",
+      "create a spending mandate in the Interlock console"
     );
 
   q.insertSession.run({
@@ -249,10 +250,16 @@ export async function intercept(
   log(`${toolName} ${payment.amount} ${payment.currency} -> ${verdict}${rule ? ` (${rule})` : ""}`);
 
   const amountText = describeAmount(payment);
+  // A block is never approvable, so the agent must not tell the user to "approve" it.
   if (verdict === "block")
     return refusal(
       `A payment of ${amountText} was blocked before it reached PayPal.`,
-      detail ?? "It breaks one of the account holder's spending rules."
+      detail ?? "It breaks one of the account holder's spending rules.",
+      rule === "prompt_injection"
+        ? "review the page the agent read in the Interlock console. A payment made after reading those instructions will not go through"
+        : rule === "amount_cap" || rule === "cumulative_cap"
+          ? "raise the spending limit in the Interlock console. A blocked payment cannot be approved as it stands"
+          : "change the spending mandate in the Interlock console. A blocked payment cannot be approved as it stands"
     );
 
   if (verdict === "hold") {
@@ -266,12 +273,14 @@ export async function intercept(
     if (outcome === "denied")
       return refusal(
         `A payment of ${amountText} was held for review, and the account holder looked at it and declined it.`,
-        `The account holder said no. That decision is the reason, and it stands.${flagged}`
+        `The account holder said no. That decision is the reason, and it stands.${flagged}`,
+        "decide to approve it when a new request is held for review in the Interlock console"
       );
     if (outcome === "timeout")
       return refusal(
         `A payment of ${amountText} was held for review, and the account holder did not approve it in time.`,
-        `Payments that are not approved are refused, never made.${flagged}`
+        `Payments that are not approved are refused, never made.${flagged}`,
+        "approve it in the Interlock console before the review time runs out, when a new request is held"
       );
 
     learnFromApproval(mandate.id, rule, payment);
